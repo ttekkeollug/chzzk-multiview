@@ -5,7 +5,10 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.Rect
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -32,7 +35,12 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
     private val slots = ArrayList<Slot>()
     private val tiles = ArrayList<StreamTile>()
 
-    private lateinit var content: LinearLayout
+    private lateinit var content: SplitLayout
+    private lateinit var topBar: LinearLayout
+    private lateinit var barHandle: View
+    private var barShown = false
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val autoHideBar = Runnable { if (slots.isNotEmpty()) setBarShown(false) }
     private lateinit var grid: MultiGridLayout
     private lateinit var chatPanel: ChatPanel
     private lateinit var emptyView: TextView
@@ -121,9 +129,8 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
         chatPanel = ChatPanel(this).apply {
             onCloseRequest = { id -> slots.find { it.channelId == id }?.let { toggleChat(it) } }
         }
-        content = LinearLayout(this).apply {
-            addView(grid)
-            addView(chatPanel)
+        content = SplitLayout(this, grid, chatPanel).apply {
+            onChanged = { dock, ratio -> saveSplit(dock, ratio) }
         }
         emptyView = TextView(this).apply {
             text = "＋ 버튼을 눌러 치지직 방송을 추가하세요\n\n" +
@@ -132,6 +139,8 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
                 "· 볼륨 0~100: 슬라이더, −/＋(길게 10씩), 숫자 탭해서 직접 입력\n" +
                 "· 🎧 이 방송만 듣기 · 💬 채팅 켜기/끄기 · ⛶ 크게 보기\n" +
                 "· 👤 치지직 로그인: 채팅 입력, 팔로잉 목록, 연령 제한 방송\n" +
+                "· 채팅창 경계선 끌기: 크기 조절 · ⠿ 손잡이 끌기: 위치 이동\n" +
+                "· 상단 메뉴는 3초 뒤 숨겨짐 · 위쪽 가운데 막대를 탭하면 다시 표시\n" +
                 "· 치지직 앱에서 '공유 → 치지직 멀티뷰'로도 추가 가능"
             setTextColor(0xFFBBBBBB.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -139,41 +148,143 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
             setLineSpacing(0f, 1.3f)
         }
 
-        val addBtn = fab("＋").apply { setOnClickListener { openAddDialog() } }
-        muteAllBtn = fab("🔊").apply { setOnClickListener { toggleMuteAll() } }
-        chatAllBtn = fab("💬").apply { setOnClickListener { toggleChatPanel() } }
-        accountBtn = fab("👤").apply { setOnClickListener { openAccount() } }
-        val fabs = LinearLayout(this).apply {
+        val addBtn = fab("＋").apply { setOnClickListener { keepBar(); openAddDialog() } }
+        muteAllBtn = fab("🔊").apply { setOnClickListener { keepBar(); toggleMuteAll() } }
+        chatAllBtn = fab("💬").apply { setOnClickListener { keepBar(); toggleChatPanel() } }
+        accountBtn = fab("👤").apply { setOnClickListener { keepBar(); openAccount() } }
+        val hideBtn = fab("⌃").apply { setOnClickListener { setBarShown(false) } }
+        topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(4), dp(4), dp(10), dp(4))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(26).toFloat()
+                setColor(0xE6141517.toInt())
+                setStroke(dp(1), 0x4400FFA3)
+            }
             addView(accountBtn)
             addView(chatAllBtn)
             addView(muteAllBtn)
             addView(addBtn)
+            addView(hideBtn)
+            // 메뉴 바 위의 터치는 아래 방송으로 전달되지 않게 막습니다.
+            isClickable = true
+        }
+        // 메뉴가 숨겨졌을 때 상단 가운데에 남는 작은 손잡이. 탭하거나 아래로 끌면 메뉴가 나옵니다.
+        barHandle = FrameLayout(this).apply {
+            val pill = View(this@MainActivity).apply {
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(3).toFloat()
+                    setColor(0x99FFFFFF.toInt())
+                }
+            }
+            addView(pill, FrameLayout.LayoutParams(dp(44), dp(5), Gravity.CENTER))
+            isClickable = true
+            setOnClickListener { setBarShown(true) }
         }
 
         val root = FrameLayout(this).apply {
             setBackgroundColor(0xFF0E0E10.toInt())
             addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(emptyView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            addView(fabs, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
-                setMargins(0, dp(6), dp(6), 0)
+            addView(barHandle, FrameLayout.LayoutParams(dp(96), dp(22), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+            addView(topBar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(BAR_TOP_MARGIN_DP)
             })
+            // 배치가 바뀔 때마다 메뉴 바와 겹치는 부분을 다시 계산
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> uiHandler.post { updateBarInsets() } }
         }
         setContentView(root)
+        topBar.visibility = View.INVISIBLE
         applyOrientation()
+        setBarShown(true)
     }
 
+    // ---------- 상단 메뉴 바 (자동 숨김) ----------
+
+    private fun setBarShown(show: Boolean) {
+        uiHandler.removeCallbacks(autoHideBar)
+        if (show) {
+            uiHandler.postDelayed(autoHideBar, BAR_AUTO_HIDE_MS)
+            if (barShown) return
+            barShown = true
+            topBar.visibility = View.VISIBLE
+            topBar.animate().cancel()
+            topBar.translationY = -dp(60).toFloat()
+            topBar.alpha = 0f
+            topBar.animate().translationY(0f).alpha(1f).setDuration(180).start()
+            barHandle.visibility = View.GONE
+            updateBarInsets()
+        } else {
+            if (!barShown) return
+            barShown = false
+            topBar.animate().cancel()
+            topBar.animate().translationY(-dp(60).toFloat()).alpha(0f).setDuration(180).withEndAction {
+                if (!barShown) {
+                    topBar.visibility = View.INVISIBLE
+                    barHandle.visibility = View.VISIBLE
+                    updateBarInsets()
+                }
+            }.start()
+        }
+    }
+
+    /** 메뉴 바 버튼을 누를 때마다 자동 숨김 시간을 연장 */
+    private fun keepBar() {
+        if (barShown) {
+            uiHandler.removeCallbacks(autoHideBar)
+            uiHandler.postDelayed(autoHideBar, BAR_AUTO_HIDE_MS)
+        }
+    }
+
+    /**
+     * 메뉴 바가 보이는 동안 그 아래에 걸치는 방송 타일의 버튼/이름과 채팅창 머리글을
+     * 메뉴 바 높이만큼 내려서 서로 겹치지 않게 합니다.
+     */
+    private fun updateBarInsets() {
+        val barRect = Rect()
+        if (barShown && topBar.width > 0) {
+            val loc = IntArray(2)
+            topBar.getLocationInWindow(loc)
+            val top = loc[1] - topBar.translationY.toInt()
+            barRect.set(loc[0], top, loc[0] + topBar.width, top + topBar.height + dp(4))
+        }
+        val loc = IntArray(2)
+        tiles.forEach { tile ->
+            tile.getLocationInWindow(loc)
+            val r = Rect(loc[0], loc[1], loc[0] + tile.width, loc[1] + tile.height)
+            val inset = if (!barRect.isEmpty && Rect.intersects(r, barRect)) barRect.bottom - r.top else 0
+            tile.setTopInset(inset.coerceAtLeast(0))
+        }
+        chatPanel.getLocationInWindow(loc)
+        val cr = Rect(loc[0], loc[1], loc[0] + chatPanel.width, loc[1] + chatPanel.height)
+        val chatInset = if (!barRect.isEmpty && chatPanel.visibility == View.VISIBLE && Rect.intersects(cr, barRect)) {
+            (barRect.bottom - cr.top).coerceAtLeast(0)
+        } else 0
+        if (chatPanel.paddingTop != chatInset) chatPanel.setPadding(0, chatInset, 0, 0)
+    }
+
+    // ---------- 채팅창 크기/위치 저장 ----------
+
+    private fun splitKey() =
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) "land" else "port"
+
+    private fun saveSplit(dock: SplitLayout.Dock, ratio: Float) {
+        getSharedPreferences("layout", MODE_PRIVATE).edit()
+            .putString("dock_${splitKey()}", dock.name)
+            .putFloat("ratio_${splitKey()}", ratio)
+            .apply()
+        uiHandler.post { updateBarInsets() }
+    }
+
+    /** 가로/세로 화면마다 사용자가 정한 채팅창 위치와 비율을 따로 기억합니다. */
     private fun applyOrientation() {
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        content.orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-        if (landscape) {
-            grid.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 7f)
-            chatPanel.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 3f)
-        } else {
-            grid.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 6f)
-            chatPanel.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 4f)
-        }
-        content.requestLayout()
+        val prefs = getSharedPreferences("layout", MODE_PRIVATE)
+        val defaultDock = if (landscape) SplitLayout.Dock.RIGHT else SplitLayout.Dock.BOTTOM
+        val defaultRatio = if (landscape) 0.3f else 0.4f
+        content.dock = prefs.getString("dock_${splitKey()}", null)
+            ?.let { name -> SplitLayout.Dock.values().firstOrNull { it.name == name } } ?: defaultDock
+        content.ratio = prefs.getFloat("ratio_${splitKey()}", defaultRatio)
     }
 
     // ---------- 슬롯 관리 ----------
@@ -301,6 +412,8 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
             it.setFocused(grid.focused === it)
         }
         emptyView.visibility = if (slots.isEmpty()) View.VISIBLE else View.GONE
+        // 방송이 하나도 없으면 메뉴를 계속 보여 줍니다.
+        if (slots.isEmpty()) setBarShown(true)
         muteAllBtn.text = if (slots.isNotEmpty() && slots.all { it.muted }) "🔇" else "🔊"
         chatAllBtn.alpha = if (chatHidden) 0.45f else 1f
         store.save(slots)
@@ -397,5 +510,7 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
 
     private companion object {
         const val MAX_STREAMS = 9
+        const val BAR_AUTO_HIDE_MS = 3_000L
+        const val BAR_TOP_MARGIN_DP = 6
     }
 }

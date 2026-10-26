@@ -381,6 +381,21 @@ class StreamTile(
         chatBtn.background = if (slot.chatOn) rounded(0x5500FFA3, 6) else null
     }
 
+    private var topInset = 0
+
+    /**
+     * 화면 상단의 전체 메뉴 바와 겹치는 타일은 이름/버튼을 그만큼 아래로 내려
+     * 두 메뉴가 서로 가리거나 잘못 눌리지 않게 합니다.
+     */
+    fun setTopInset(px: Int) {
+        if (px == topInset) return
+        topInset = px
+        (nameView.layoutParams as LayoutParams).topMargin = dp(6) + px
+        (actionBar.layoutParams as LayoutParams).topMargin = dp(4) + px
+        nameView.requestLayout()
+        actionBar.requestLayout()
+    }
+
     fun setFocused(isFocused: Boolean) {
         focusBtn.text = if (isFocused) "▣" else "⛶"
     }
