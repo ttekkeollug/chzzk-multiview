@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 2x2 멀티뷰 타일 -->
+    <path android:fillColor="#00FFA3" android:pathData="M30,34h22v14h-22z" />
+    <path android:fillColor="#00FFA3" android:pathData="M56,34h22v14h-22z" />
+    <path android:fillColor="#00FFA3" android:pathData="M30,52h22v14h-22z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M56,52h22v14h-22z" />
+    <!-- 재생 표시 -->
+    <path android:fillColor="#141517" android:pathData="M64,55.5l7,3.5l-7,3.5z" />
+    <!-- 채팅 말풍선 -->
+    <path android:fillColor="#FFFFFF" android:pathData="M30,70h20v6h-14l-4,4v-4h-2z" />
+</vector>
