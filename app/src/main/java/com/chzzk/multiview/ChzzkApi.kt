@@ -3,6 +3,7 @@ package com.chzzk.multiview
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import android.webkit.CookieManager
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -46,6 +47,60 @@ object ChzzkApi {
         CHANNEL_ID_REGEX.find(input.lowercase())?.value
 
     fun chatUrl(channelId: String) = "https://chzzk.naver.com/live/$channelId/chat"
+
+    const val LOGIN_URL =
+        "https://nid.naver.com/nidlogin.login?mode=form&url=https%3A%2F%2Fchzzk.naver.com%2F"
+
+    data class UserStatus(val loggedIn: Boolean, val nickname: String?)
+
+    /** WebView 로그인으로 저장된 네이버 세션 쿠키. 없으면 null. */
+    fun sessionCookie(): String? {
+        val cookie = try {
+            CookieManager.getInstance().getCookie("https://chzzk.naver.com")
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        return if (cookie.contains("NID_AUT") && cookie.contains("NID_SES")) cookie else null
+    }
+
+    fun hasSession() = sessionCookie() != null
+
+    suspend fun userStatus(): UserStatus = withContext(Dispatchers.IO) {
+        if (!hasSession()) return@withContext UserStatus(false, null)
+        val c = getJson("https://comm-api.game.naver.com/nng_main/v1/user/getUserStatus")
+            .optJSONObject("content") ?: return@withContext UserStatus(false, null)
+        val nick = if (c.isNull("nickname")) null else c.optString("nickname")
+        UserStatus(c.optBoolean("loggedIn", false), nick)
+    }
+
+    /** 로그인한 계정의 팔로우 채널 (방송 중인 채널이 위로). */
+    suspend fun followings(): List<ChannelInfo> = withContext(Dispatchers.IO) {
+        val content = getJson("$BASE/service/v1/channels/followings?page=0&size=505&sortType=FOLLOW")
+            .optJSONObject("content") ?: return@withContext emptyList()
+        val list = content.optJSONArray("followingList") ?: content.optJSONArray("data")
+            ?: return@withContext emptyList()
+        buildList {
+            for (i in 0 until list.length()) {
+                val item = list.optJSONObject(i) ?: continue
+                val ch = item.optJSONObject("channel")
+                val id = item.optString("channelId").ifEmpty { ch?.optString("channelId").orEmpty() }
+                if (id.isEmpty()) continue
+                val liveInfo = item.optJSONObject("liveInfo")
+                val liveTitle = liveInfo?.let { if (it.isNull("liveTitle")) null else it.optString("liveTitle") }
+                val isLive = item.optJSONObject("streamer")?.optBoolean("openLive", false) == true ||
+                    ch?.optBoolean("openLive", false) == true || !liveTitle.isNullOrBlank()
+                add(
+                    ChannelInfo(
+                        channelId = id,
+                        channelName = ch?.optString("channelName")?.ifEmpty { null } ?: id,
+                        isLive = isLive,
+                        liveTitle = if (isLive) liveTitle else null,
+                        viewers = liveInfo?.optInt("concurrentUserCount") ?: 0,
+                    )
+                )
+            }
+        }.sortedByDescending { it.isLive }
+    }
 
     suspend fun searchChannels(keyword: String, size: Int = 20): List<ChannelInfo> =
         withContext(Dispatchers.IO) {
@@ -101,8 +156,11 @@ object ChzzkApi {
         if (c.optString("status") != "OPEN") return@withContext LiveResult.Offline(name)
 
         if (c.isNull("livePlaybackJson")) {
-            val reason = if (c.optBoolean("adult")) "연령 제한 방송 (앱에서 재생 불가)"
-            else "재생 정보를 받을 수 없는 방송"
+            val reason = when {
+                !c.optBoolean("adult") -> "재생 정보를 받을 수 없는 방송"
+                hasSession() -> "연령 제한 방송 (본인인증된 계정 필요)"
+                else -> "연령 제한 방송 · 👤 로그인 필요"
+            }
             return@withContext LiveResult.Restricted(name, reason)
         }
 
@@ -137,6 +195,9 @@ object ChzzkApi {
             conn.readTimeout = 8000
             conn.setRequestProperty("User-Agent", USER_AGENT)
             conn.setRequestProperty("Accept", "application/json")
+            conn.setRequestProperty("Referer", "https://chzzk.naver.com/")
+            conn.setRequestProperty("Origin", "https://chzzk.naver.com")
+            sessionCookie()?.let { conn.setRequestProperty("Cookie", it) }
             val code = conn.responseCode
             if (code !in 200..299) throw IOException("HTTP $code")
             val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }

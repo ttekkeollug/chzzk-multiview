@@ -57,6 +57,9 @@ class ChatPanel(context: Context) : LinearLayout(context) {
         visibility = if (wanted.isEmpty()) View.GONE else View.VISIBLE
     }
 
+    /** 로그인/로그아웃 후 쿠키가 바뀌었을 때 채팅창을 새로 불러옵니다. */
+    fun reloadAll() = entries.values.forEach { it.web.reload() }
+
     fun pauseAll() = entries.values.forEach { it.web.onPause() }
     fun resumeAll() = entries.values.forEach { it.web.onResume() }
 

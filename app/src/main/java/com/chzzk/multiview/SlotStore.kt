@@ -8,7 +8,8 @@ import org.json.JSONObject
 data class Slot(
     val channelId: String,
     var name: String,
-    var volume: Float = 1f,
+    /** 0~100 */
+    var volume: Int = 100,
     var muted: Boolean = false,
     var chatOn: Boolean = false,
 )
@@ -26,7 +27,8 @@ class SlotStore(context: Context) {
                 Slot(
                     channelId = o.getString("id"),
                     name = o.optString("name", o.getString("id")),
-                    volume = o.optDouble("vol", 1.0).toFloat().coerceIn(0f, 1f),
+                    volume = (if (o.has("vol100")) o.optInt("vol100", 100)
+                    else Math.round(o.optDouble("vol", 1.0) * 100).toInt()).coerceIn(0, 100),
                     muted = o.optBoolean("muted", false),
                     chatOn = o.optBoolean("chat", false),
                 )
@@ -43,7 +45,7 @@ class SlotStore(context: Context) {
                 JSONObject()
                     .put("id", it.channelId)
                     .put("name", it.name)
-                    .put("vol", it.volume.toDouble())
+                    .put("vol100", it.volume)
                     .put("muted", it.muted)
                     .put("chat", it.chatOn)
             )

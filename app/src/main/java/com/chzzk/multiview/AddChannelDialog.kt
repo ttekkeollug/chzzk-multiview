@@ -31,6 +31,7 @@ class AddChannelDialog(
     private val context: Context,
     private val scope: CoroutineScope,
     private val alreadyAdded: Set<String>,
+    private val startWithFollowings: Boolean = false,
     private val onPick: (channelId: String, name: String) -> Unit,
 ) {
     private var job: Job? = null
@@ -99,6 +100,19 @@ class AddChannelDialog(
             addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(searchBtn)
         }
+        val popularBtn = Button(context).apply {
+            text = "🔥 인기 라이브"
+            setOnClickListener { loadPopular() }
+        }
+        val followBtn = Button(context).apply {
+            text = "⭐ 팔로잉"
+            setOnClickListener { loadFollowings() }
+        }
+        val tabs = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(popularBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(followBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
         val list = ListView(context).apply {
             adapter = this@AddChannelDialog.adapter
             setOnItemClickListener { _, _, pos, _ ->
@@ -113,6 +127,7 @@ class AddChannelDialog(
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), 0)
             addView(bar)
+            addView(tabs)
             addView(info)
             addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -135,7 +150,7 @@ class AddChannelDialog(
             .create()
         dialog.setOnDismissListener { job?.cancel() }
         dialog.show()
-        loadPopular()
+        if (startWithFollowings) loadFollowings() else loadPopular()
     }
 
     private fun submit() {
@@ -157,6 +172,16 @@ class AddChannelDialog(
     }
 
     private fun loadPopular() = run("지금 인기 라이브") { ChzzkApi.popularLives() }
+
+    private fun loadFollowings() {
+        if (!ChzzkApi.hasSession()) {
+            items.clear()
+            adapter.notifyDataSetChanged()
+            info.text = "팔로잉 목록은 상단 👤 버튼으로 치지직 로그인 후 볼 수 있습니다."
+            return
+        }
+        run("내 팔로잉 (방송 중 우선)") { ChzzkApi.followings() }
+    }
 
     private fun run(label: String, block: suspend () -> List<ChzzkApi.ChannelInfo>) {
         job?.cancel()

@@ -1,5 +1,6 @@
 package com.chzzk.multiview
 
+import android.app.Activity
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
@@ -10,16 +11,20 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity(), StreamTile.Listener {
 
@@ -33,6 +38,14 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
     private lateinit var emptyView: TextView
     private lateinit var muteAllBtn: TextView
     private lateinit var chatAllBtn: TextView
+    private lateinit var accountBtn: TextView
+    private var nickname: String? = null
+
+    private val loginLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) onSessionChanged(showWelcome = true)
+    }
 
     /** 채팅 패널 전체 숨김 (개별 채팅 on/off 상태는 유지) */
     private var chatHidden = false
@@ -61,6 +74,7 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
         })
 
         handleShareIntent(intent)
+        refreshAccount(showWelcome = false)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -101,7 +115,9 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
     // ---------- UI 구성 ----------
 
     private fun buildUi() {
-        grid = MultiGridLayout(this)
+        grid = MultiGridLayout(this).apply {
+            onOrderChanged = { order -> applyOrder(order) }
+        }
         chatPanel = ChatPanel(this).apply {
             onCloseRequest = { id -> slots.find { it.channelId == id }?.let { toggleChat(it) } }
         }
@@ -112,8 +128,10 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
         emptyView = TextView(this).apply {
             text = "＋ 버튼을 눌러 치지직 방송을 추가하세요\n\n" +
                 "· 방송 탭: 컨트롤 표시\n" +
-                "· 방송 길게 누르기: 그 방송만 소리 듣기\n" +
-                "· 💬 채팅 켜기/끄기 · ⛶ 크게 보기\n" +
+                "· 방송 길게 눌러 끌기: 원하는 자리로 이동\n" +
+                "· 볼륨 0~100: 슬라이더, −/＋(길게 10씩), 숫자 탭해서 직접 입력\n" +
+                "· 🎧 이 방송만 듣기 · 💬 채팅 켜기/끄기 · ⛶ 크게 보기\n" +
+                "· 👤 치지직 로그인: 채팅 입력, 팔로잉 목록, 연령 제한 방송\n" +
                 "· 치지직 앱에서 '공유 → 치지직 멀티뷰'로도 추가 가능"
             setTextColor(0xFFBBBBBB.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -124,8 +142,10 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
         val addBtn = fab("＋").apply { setOnClickListener { openAddDialog() } }
         muteAllBtn = fab("🔊").apply { setOnClickListener { toggleMuteAll() } }
         chatAllBtn = fab("💬").apply { setOnClickListener { toggleChatPanel() } }
+        accountBtn = fab("👤").apply { setOnClickListener { openAccount() } }
         val fabs = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            addView(accountBtn)
             addView(chatAllBtn)
             addView(muteAllBtn)
             addView(addBtn)
@@ -181,10 +201,84 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
         syncAll()
     }
 
-    private fun openAddDialog() {
-        AddChannelDialog(this, lifecycleScope, slots.map { it.channelId }.toSet()) { id, name ->
+    private fun openAddDialog(startWithFollowings: Boolean = false) {
+        AddChannelDialog(
+            this, lifecycleScope, slots.map { it.channelId }.toSet(), startWithFollowings,
+        ) { id, name ->
             addChannel(id, name)
         }.show()
+    }
+
+    // ---------- 계정 연동 ----------
+
+    private fun openAccount() {
+        if (!ChzzkApi.hasSession()) {
+            loginLauncher.launch(Intent(this, LoginActivity::class.java))
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("👤 ${nickname ?: "치지직 계정"} 로그인됨")
+            .setItems(arrayOf("⭐ 팔로잉 방송 추가", "🔄 계정 정보 새로고침", "🚪 로그아웃")) { _, which ->
+                when (which) {
+                    0 -> openAddDialog(startWithFollowings = true)
+                    1 -> refreshAccount(showWelcome = true)
+                    2 -> logout()
+                }
+            }
+            .setNegativeButton("닫기", null)
+            .show()
+    }
+
+    private fun logout() {
+        CookieManager.getInstance().removeAllCookies {
+            CookieManager.getInstance().flush()
+            nickname = null
+            onSessionChanged(showWelcome = false)
+            toast("로그아웃했습니다")
+        }
+    }
+
+    /** 로그인 상태가 바뀌면 채팅창과 방송(연령 제한 등)을 새 세션으로 다시 불러옵니다. */
+    private fun onSessionChanged(showWelcome: Boolean) {
+        chatPanel.reloadAll()
+        tiles.forEach { it.start() }
+        refreshAccount(showWelcome)
+    }
+
+    private fun refreshAccount(showWelcome: Boolean) {
+        updateAccountButton()
+        if (!ChzzkApi.hasSession()) return
+        lifecycleScope.launch {
+            val status = try {
+                ChzzkApi.userStatus()
+            } catch (e: Exception) {
+                null
+            }
+            if (status == null) return@launch
+            nickname = if (status.loggedIn) status.nickname else null
+            updateAccountButton()
+            if (showWelcome) {
+                toast(if (status.loggedIn) "${status.nickname ?: "치지직"} 계정으로 연동되었습니다" else "로그인 세션이 만료되었습니다")
+            }
+        }
+    }
+
+    private fun updateAccountButton() {
+        val on = ChzzkApi.hasSession()
+        accountBtn.alpha = if (on) 1f else 0.55f
+        (accountBtn.background as? GradientDrawable)?.setStroke(dp(if (on) 2 else 1), if (on) 0xFF00FFA3.toInt() else 0x6600FFA3)
+    }
+
+    // ---------- 드래그 순서 ----------
+
+    private fun applyOrder(order: List<View>) {
+        val newTiles = order.filterIsInstance<StreamTile>()
+        if (newTiles.size != tiles.size) return
+        tiles.clear()
+        tiles.addAll(newTiles)
+        slots.clear()
+        slots.addAll(newTiles.map { it.slot })
+        syncAll()
     }
 
     private fun handleShareIntent(intent: Intent?) {
@@ -259,9 +353,13 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
 
     override fun onSolo(tile: StreamTile) {
         slots.forEach { it.muted = it !== tile.slot }
-        if (tile.slot.volume == 0f) tile.slot.volume = 1f
+        if (tile.slot.volume == 0) tile.slot.volume = 100
         tiles.forEach { it.applyVolume() }
         syncAll()
+    }
+
+    override fun onStartDrag(tile: StreamTile) {
+        grid.startDrag(tile, tile.slot.name)
     }
 
     override fun onFocusToggle(tile: StreamTile) {

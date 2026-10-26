@@ -6,15 +6,19 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.text.InputFilter
+import android.text.InputType
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.annotation.OptIn
+import androidx.appcompat.app.AlertDialog
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -50,6 +54,7 @@ class StreamTile(
         fun onRemove(tile: StreamTile)
         fun onSolo(tile: StreamTile)
         fun onFocusToggle(tile: StreamTile)
+        fun onStartDrag(tile: StreamTile)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -84,31 +89,48 @@ class StreamTile(
     }
 
     private val muteBtn = iconButton("🔊")
+    private val minusBtn = iconButton("−")
+    private val plusBtn = iconButton("＋")
+    private val soloBtn = iconButton("🎧")
     private val chatBtn = iconButton("💬")
     private val focusBtn = iconButton("⛶")
     private val removeBtn = iconButton("✕")
+
+    /** 현재 볼륨 숫자. 탭하면 0~100 값을 직접 입력할 수 있습니다. */
     private val volumeLabel = TextView(context).apply {
-        setTextColor(Color.WHITE)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-        minWidth = dp(30)
+        setTextColor(0xFF00FFA3.toInt())
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        minWidth = dp(40)
         gravity = Gravity.CENTER
+        isClickable = true
+        background = rounded(0x33FFFFFF, 6)
+        setPadding(dp(4), dp(4), dp(4), dp(4))
     }
     private val volumeBar = SeekBar(context).apply {
         max = 100
-        progress = (slot.volume * 100).toInt()
+        progress = slot.volume
     }
 
-    private val controls = LinearLayout(context).apply {
+    private val actionBar = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(4), dp(2), dp(4), dp(2))
-        background = rounded(0xB3000000.toInt(), 0)
-        addView(muteBtn)
-        addView(volumeBar, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
-        addView(volumeLabel)
+        background = rounded(0x99000000.toInt(), 6)
+        addView(soloBtn)
         addView(chatBtn)
         addView(focusBtn)
         addView(removeBtn)
+    }
+
+    private val volumeRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(4), dp(2), dp(6), dp(2))
+        background = rounded(0xB3000000.toInt(), 0)
+        addView(muteBtn)
+        addView(minusBtn)
+        addView(volumeBar, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+        addView(plusBtn)
+        addView(volumeLabel)
     }
 
     private val hideControls = Runnable { setControlsVisible(false) }
@@ -119,23 +141,35 @@ class StreamTile(
         addView(playerView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(statusView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         addView(nameView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
-            setMargins(dp(6), dp(6), dp(60), 0)
+            setMargins(dp(6), dp(6), dp(170), 0)
         })
-        addView(controls, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        addView(actionBar, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
+            setMargins(0, dp(4), dp(4), 0)
+        })
+        addView(volumeRow, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
 
         nameView.text = slot.name
 
-        // 탭: 컨트롤 표시/숨김, 길게 누르기: 이 방송만 소리 듣기(솔로)
-        setOnClickListener { setControlsVisible(controls.visibility != View.VISIBLE) }
+        // 탭: 컨트롤 표시/숨김, 길게 누른 채 끌기: 화면 위치 이동
+        setOnClickListener { setControlsVisible(volumeRow.visibility != View.VISIBLE) }
         setOnLongClickListener {
-            listener.onSolo(this)
-            flashStatus("🎧 이 방송만 듣기")
+            listener.onStartDrag(this)
             true
         }
         muteBtn.setOnClickListener {
             slot.muted = !slot.muted
-            applyVolume()
-            listener.onSlotChanged(this)
+            if (!slot.muted && slot.volume == 0) slot.volume = 50
+            volumeChanged()
+        }
+        // 탭: 1씩, 길게 누르기: 10씩
+        minusBtn.setOnClickListener { setVolume(slot.volume - 1) }
+        minusBtn.setOnLongClickListener { setVolume(slot.volume - 10); true }
+        plusBtn.setOnClickListener { setVolume(slot.volume + 1) }
+        plusBtn.setOnLongClickListener { setVolume(slot.volume + 10); true }
+        volumeLabel.setOnClickListener { askVolume() }
+        soloBtn.setOnClickListener {
+            listener.onSolo(this)
+            flashStatus("🎧 이 방송만 듣기")
             bumpHideTimer()
         }
         chatBtn.setOnClickListener {
@@ -150,8 +184,8 @@ class StreamTile(
         volumeBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
                 if (!fromUser) return
-                slot.volume = progress / 100f
-                if (slot.muted && progress > 0) slot.muted = false
+                slot.volume = progress
+                slot.muted = progress == 0
                 applyVolume()
             }
 
@@ -269,15 +303,53 @@ class StreamTile(
         handler.postDelayed(retry, delayMs)
     }
 
-    // ---------- 볼륨 ----------
+    // ---------- 볼륨 (0~100) ----------
 
     fun applyVolume() {
-        val effective = if (slot.muted) 0f else slot.volume
-        player?.volume = effective
-        muteBtn.text = if (effective == 0f) "🔇" else "🔊"
-        volumeLabel.text = if (slot.muted) "음소거" else "${(slot.volume * 100).toInt()}"
-        if (volumeBar.progress != (slot.volume * 100).toInt()) volumeBar.progress = (slot.volume * 100).toInt()
-        nameView.alpha = if (effective == 0f) 0.6f else 1f
+        val v = slot.volume.coerceIn(0, 100)
+        slot.volume = v
+        val silent = slot.muted || v == 0
+        player?.volume = if (silent) 0f else v / 100f
+        muteBtn.text = if (silent) "🔇" else "🔊"
+        volumeLabel.text = if (slot.muted) "음소거" else v.toString()
+        if (volumeBar.progress != v) volumeBar.progress = v
+        nameView.alpha = if (silent) 0.6f else 1f
+    }
+
+    private fun setVolume(value: Int) {
+        slot.volume = value.coerceIn(0, 100)
+        slot.muted = slot.volume == 0
+        volumeChanged()
+    }
+
+    private fun volumeChanged() {
+        applyVolume()
+        listener.onSlotChanged(this)
+        bumpHideTimer()
+    }
+
+    private fun askVolume() {
+        handler.removeCallbacks(hideControls)
+        val input = EditText(context).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            filters = arrayOf(InputFilter.LengthFilter(3))
+            setText(slot.volume.toString())
+            selectAll()
+            gravity = Gravity.CENTER
+        }
+        val box = FrameLayout(context).apply {
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(input)
+        }
+        AlertDialog.Builder(context)
+            .setTitle("${slot.name} 볼륨 (0~100)")
+            .setView(box)
+            .setPositiveButton("적용") { _, _ ->
+                input.text.toString().toIntOrNull()?.let { setVolume(it) }
+            }
+            .setNegativeButton("취소", null)
+            .setOnDismissListener { bumpHideTimer() }
+            .show()
     }
 
     // ---------- 화질 자동 조절 ----------
@@ -334,8 +406,10 @@ class StreamTile(
     }
 
     private fun setControlsVisible(visible: Boolean) {
-        controls.visibility = if (visible) View.VISIBLE else View.GONE
-        nameView.visibility = controls.visibility
+        val v = if (visible) View.VISIBLE else View.GONE
+        volumeRow.visibility = v
+        actionBar.visibility = v
+        nameView.visibility = v
         if (visible) bumpHideTimer()
     }
 
@@ -349,7 +423,7 @@ class StreamTile(
         setTextColor(Color.WHITE)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
         gravity = Gravity.CENTER
-        minWidth = dp(36)
+        minWidth = dp(34)
         minHeight = dp(34)
         isClickable = true
         isFocusable = true
