@@ -301,10 +301,6 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
             toast("이미 추가된 채널입니다")
             return
         }
-        if (slots.size >= MAX_STREAMS) {
-            toast("최대 ${MAX_STREAMS}개까지 볼 수 있습니다")
-            return
-        }
         val slot = Slot(channelId, name)
         slots.add(slot)
         val tile = addTile(slot)
@@ -509,7 +505,6 @@ class MainActivity : AppCompatActivity(), StreamTile.Listener {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private companion object {
-        const val MAX_STREAMS = 9
         const val BAR_AUTO_HIDE_MS = 3_000L
         const val BAR_TOP_MARGIN_DP = 6
     }

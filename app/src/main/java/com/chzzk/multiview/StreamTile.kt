@@ -358,7 +358,9 @@ class StreamTile(
         super.onSizeChanged(w, h, oldw, oldh)
         // 타일의 실제 픽셀 높이를 기준으로 필요한 만큼만 화질을 받음
         val videoH = minOf(h, w * 9 / 16)
+        // 방송 개수 제한이 없으므로 아주 작은 타일은 360p까지 낮춰 많이 띄워도 버티게 합니다.
         maxHeightCap = when {
+            videoH <= 180 -> 360
             videoH <= 300 -> 480
             videoH <= 560 -> 720
             else -> Int.MAX_VALUE
